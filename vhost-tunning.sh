@@ -53,6 +53,8 @@ VH_NAME=$1
 SITE_SIZE=$(echo "$2" | tr '[:upper:]' '[:lower:]') # Convert site_size to lowercase
 VHOST_CONF="/www/server/panel/vhost/openlitespeed/detail/${VH_NAME}.conf"
 LOG_DIR="/www/wwwlogs/${VH_NAME}"
+VH_ROOT="/www/wwwroot"
+CACHE_DIR="${VH_ROOT}/cache/${VH_NAME}/lscache"
 
 # Check if the virtual host configuration file exists
 log "Checking for virtual host configuration file at ${VHOST_CONF}..."
@@ -76,31 +78,45 @@ cp "$VHOST_CONF" "${VHOST_CONF}.bak_tuning_${TIMESTAMP}"
 
 
 # --- 2. CREATE AND CONFIGURE NEW LOG DIRECTORY ---
+# Check for the log directory
 log "Checking for log directory at ${LOG_DIR}..."
 if [ ! -d "$LOG_DIR" ]; then
-    log "Directory not found. Creating new log directory..."
+    log "Log directory not found. Creating..."
     mkdir -p "$LOG_DIR"
     chown www:www "$LOG_DIR"
     chmod 700 "$LOG_DIR"
     log "Log directory created and permissions set."
 else
-    log "Log directory already exists. Skipping creation."
+    log "Log directory already exists. Skipping."
+fi
+
+# Check for the cache directory
+log "Checking for cache directory at ${CACHE_DIR}..."
+if [ ! -d "$CACHE_DIR" ]; then
+    log "Cache directory not found. Creating..."
+    mkdir -p "$CACHE_DIR"
+    chown -R www:www "${VH_ROOT}/cache/"
+    chmod -R 700 "${VH_ROOT}/cache/"
+
+    log "Cache directory created and permissions set."
+else
+    log "Cache directory already exists. Skipping."
 fi
 
 # --- 3. DEFINE CONFIGURATIONS BASED ON SITE SIZE ---
 
 # This structure makes it easy to add different values for 'medium' or 'small' later.
 case "$SITE_SIZE" in
-    high|medium|small)
+    high)
         # LSAPI Processor Settings
-        MAX_CONNS="120"
-        LSAPI_CHILDREN="120"
-        INIT_TIMEOUT="60"
-        KEEPALIVE_TIMEOUT="15"
-        MEM_SOFT_LIMIT="5120M"
-        MEM_HARD_LIMIT="5120M"
-        PROC_SOFT_LIMIT="400"
-        PROC_HARD_LIMIT="500"
+        MAX_CONNS="200"
+        LSAPI_CHILDREN="200"
+        INIT_TIMEOUT="300"
+        KEEPALIVE_TIMEOUT="30"
+        MEM_SOFT_LIMIT="6144M"
+        MEM_HARD_LIMIT="6144M"
+        PROC_SOFT_LIMIT="800"
+        PROC_HARD_LIMIT="900"
 
     # Define the logging blocks
     ERROR_LOG_BLOCK="""
@@ -125,7 +141,7 @@ accesslog ${LOG_DIR}/ols-access.log {
         # Construct the full phpIniOverride block
         PHP_INI_OVERRIDES="""phpIniOverride  {
     php_admin_value open_basedir \"/tmp/:/www/wwwroot/${VH_NAME}/\"
-    php_admin_value memory_limit \"1024M\"
+    php_admin_value memory_limit \"512M\"
     php_admin_value upload_max_filesize \"64M\"
     php_admin_value post_max_size \"64M\"
     php_admin_value max_execution_time \"300\"
@@ -139,12 +155,150 @@ accesslog ${LOG_DIR}/ols-access.log {
         # Construct the full module cache block
         CACHE_MODULE_BLOCK="""
 module cache {
-    storagePath             \$VH_ROOT/lscache
+    storagePath             $VH_ROOT/cache/${VH_NAME}/lscache
     ls_enabled              1
 
     checkPrivateCache       0
     checkPublicCache        1
     maxCacheObjSize         10000000
+    maxStaleAge             200
+
+    qsCache                 1
+    reqCookieCache          1
+    respCookieCache         1
+
+    ignoreReqCacheCtrl      1
+    ignoreRespCacheCtrl     0
+
+    enableCache             1
+    expireInSeconds         3600
+    enablePrivateCache      0
+    privateExpireInSeconds  3600
+}"""
+        ;;
+    medium)
+        # LSAPI Processor Settings
+        MAX_CONNS="100"
+        LSAPI_CHILDREN="100"
+        INIT_TIMEOUT="90"
+        KEEPALIVE_TIMEOUT="15"
+        MEM_SOFT_LIMIT="4096M"
+        MEM_HARD_LIMIT="4096M"
+        PROC_SOFT_LIMIT="600"
+        PROC_HARD_LIMIT="700"
+
+    # Define the logging blocks
+    ERROR_LOG_BLOCK="""
+errorlog ${LOG_DIR}/ols-error.log {
+    useServer               0
+    logLevel                NOTICE
+    rollingSize             500M
+    keepDays                10
+    compressArchive         1
+}"""
+
+    ACCESS_LOG_BLOCK="""
+accesslog ${LOG_DIR}/ols-access.log {
+    useServer               0
+    logFormat               '%{X-Forwarded-For}i %h %l %u %t \"%r\" %>s %b \"%{Referer}i\" \"%{User-Agent}i\"'
+    logHeaders              6
+    rollingSize             500M
+    keepDays                10
+    compressArchive         1
+}"""
+
+        # Construct the full phpIniOverride block
+        PHP_INI_OVERRIDES="""phpIniOverride  {
+    php_admin_value open_basedir \"/tmp/:/www/wwwroot/${VH_NAME}/\"
+    php_admin_value memory_limit \"256M\"
+    php_admin_value upload_max_filesize \"32M\"
+    php_admin_value post_max_size \"32M\"
+    php_admin_value max_execution_time \"180\"
+    php_admin_value max_input_time \"60\"
+    php_admin_value error_log \"${LOG_DIR}/php-error.log\"
+    php_admin_value log_errors \"On\"
+    php_admin_value error_reporting \"E_ALL & ~E_DEPRECATED & ~E_STRICT\"
+    php_admin_value display_errors \"Off\"
+}"""
+
+        # Construct the full module cache block
+        CACHE_MODULE_BLOCK="""
+module cache {
+    storagePath             $VH_ROOT/cache/${VH_NAME}/lscache
+    ls_enabled              1
+
+    checkPrivateCache       0
+    checkPublicCache        1
+    maxCacheObjSize         5000000
+    maxStaleAge             180
+
+    qsCache                 1
+    reqCookieCache          1
+    respCookieCache         1
+
+    ignoreReqCacheCtrl      1
+    ignoreRespCacheCtrl     0
+
+    enableCache             1
+    expireInSeconds         3600
+    enablePrivateCache      0
+    privateExpireInSeconds  3600
+}"""
+        ;;
+    small)
+        # LSAPI Processor Settings
+        MAX_CONNS="20"
+        LSAPI_CHILDREN="40"
+        INIT_TIMEOUT="60"
+        KEEPALIVE_TIMEOUT="15"
+        MEM_SOFT_LIMIT="2047M"
+        MEM_HARD_LIMIT="2047M"
+        PROC_SOFT_LIMIT="400"
+        PROC_HARD_LIMIT="500"
+
+    # Define the logging blocks
+    ERROR_LOG_BLOCK="""
+errorlog ${LOG_DIR}/ols-error.log {
+    useServer               0
+    logLevel                NOTICE
+    rollingSize             500M
+    keepDays                10
+    compressArchive         1
+}"""
+
+    ACCESS_LOG_BLOCK="""
+accesslog ${LOG_DIR}/ols-access.log {
+    useServer               0
+    logFormat               '%{X-Forwarded-For}i %h %l %u %t \"%r\" %>s %b \"%{Referer}i\" \"%{User-Agent}i\"'
+    logHeaders              6
+    rollingSize             500M
+    keepDays                10
+    compressArchive         1
+}"""
+
+        # Construct the full phpIniOverride block
+        PHP_INI_OVERRIDES="""phpIniOverride  {
+    php_admin_value open_basedir \"/tmp/:/www/wwwroot/${VH_NAME}/\"
+    php_admin_value memory_limit \"128M\"
+    php_admin_value upload_max_filesize \"16M\"
+    php_admin_value post_max_size \"16M\"
+    php_admin_value max_execution_time \"60\"
+    php_admin_value max_input_time \"60\"
+    php_admin_value error_log \"${LOG_DIR}/php-error.log\"
+    php_admin_value log_errors \"On\"
+    php_admin_value error_reporting \"E_ALL & ~E_DEPRECATED & ~E_STRICT\"
+    php_admin_value display_errors \"Off\"
+}"""
+
+        # Construct the full module cache block
+        CACHE_MODULE_BLOCK="""
+module cache {
+    storagePath             $VH_ROOT/cache/${VH_NAME}/lscache
+    ls_enabled              1
+
+    checkPrivateCache       0
+    checkPublicCache        1
+    maxCacheObjSize         2000000
     maxStaleAge             200
 
     qsCache                 1
@@ -192,6 +346,7 @@ sed -i '/^module cache[[:space:]]*{/,/}/d' "$VHOST_CONF"
 
 # Append all new configurations blocks to the end of the file.
 {
+    echo ""
     echo "$ERROR_LOG_BLOCK"
     echo "$ACCESS_LOG_BLOCK"
     echo "$PHP_INI_OVERRIDES"
