@@ -320,7 +320,48 @@ module cache {
 esac
 
 
-# --- 4. APPLY CHANGES TO VHOST CONFIGURATION FILE ---
+# --- 4. UPDATE AAPANEL LOG PATHS ---
+update_aapanel_log_paths() {
+    log "Updating aaPanel log paths..."
+    local V1="/www/server/panel/class/panelSite.py"
+    local V2="/www/server/panel/class_v2/panel_site_v2.py"
+    local files_to_patch=()
+
+    # Check which files exist
+    [ -f "$V1" ] && files_to_patch+=("$V1")
+    [ -f "$V2" ] && files_to_patch+=("$V2")
+
+    if [ ${#files_to_patch[@]} -eq 0 ]; then
+        log "No aaPanel site management files found to patch. Skipping."
+        return
+    fi
+
+    for file in "${files_to_patch[@]}"; do
+        # Create a one-time backup
+        if [ ! -f "${file}.vhost_tunning_bak" ]; then
+            log "Creating backup for ${file}..."
+            cp "$file" "${file}.vhost_tunning_bak"
+        fi
+
+        # Check if patching is needed before applying sed
+        if grep -q "'/www/wwwlogs/'[[:space:]]*+[[:space:]]*get.siteName[[:space:]]*+[[:space:]]*'_ols\." "$file"; then
+            log "Patching OLS log paths in ${file}..."
+            # Update OLS access log path
+            sed -i "s|'/www/wwwlogs/'[[:space:]]*+[[:space:]]*get.siteName[[:space:]]*+[[:space:]]*'_ols\.access_log'|'/www/wwwlogs/' + get.siteName + '/ols-access.log'|g" "$file"
+            # Update OLS error log path
+            sed -i "s|'/www/wwwlogs/'[[:space:]]*+[[:space:]]*get.siteName[[:space:]]*+[[:space:]]*'_ols\.error_log'|'/www/wwwlogs/' + get.siteName + '/ols-error.log'|g" "$file"
+            log "Finished patching ${file}."
+        else
+            log "Log paths in ${file} appear to be already updated. Skipping patch."
+        fi
+    done
+}
+
+# Call the function to update aaPanel paths
+update_aapanel_log_paths
+
+
+# --- 5. APPLY CHANGES TO VHOST CONFIGURATION FILE ---
 log "Applying optimizations to ${VHOST_CONF}..."
 
 
@@ -354,7 +395,7 @@ sed -i '/^module cache[[:space:]]*{/,/}/d' "$VHOST_CONF"
 } >> "$VHOST_CONF"
 
 
-# --- 5. CLEAN UP OLD LOG FILES ---
+# --- 6. CLEAN UP OLD LOG FILES ---
 log "Cleaning up old default log files in old directory..."
 if [ -f "/www/wwwlogs/${VH_NAME}_ols.error_log" ]; then
     rm -f "/www/wwwlogs/${VH_NAME}_ols.error_log"
@@ -365,9 +406,17 @@ if [ -f "/www/wwwlogs/${VH_NAME}_ols.access_log" ]; then
     log "Removed old access log."
 fi
 
-# --- 6. RESTARTING LITESPEED SERVER ---
+# --- 7. RESTARTING LITESPEED SERVER ---
 log "Restarting LiteSpeed server..."
-sudo /usr/local/lsws/bin/lswsctrl restart
+if ! sudo /usr/local/lsws/bin/lswsctrl restart; then
+    error "LiteSpeed restart failed. Please check the configuration."
+fi
+
+# --- 8. RESTARTING AAPANEL ---
+log "Restarting aaPanel for changes to take effect..."
+if ! sudo bt restart; then
+    log "[WARNING] aaPanel restart failed. You may need to restart it manually from the command line with 'bt restart'."
+fi
 
 # --- FINAL INSTRUCTIONS ---
 echo
